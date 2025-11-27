@@ -20,33 +20,24 @@ class ParityDataset(Dataset):
 # --- TASK 2: ASSOCIATIVE RECALL (Memory) ---
 class AssociativeRecallDataset(Dataset):
     def __init__(self, samples=2000, seq_len=32):
-        self.seq_len = seq_len # Length of the Key-Value pairs only
+        self.seq_len = seq_len
         self.samples = samples
     
     def __len__(self): return self.samples
     def __getitem__(self, idx):
-        # Format: Key (0-9), Value (10-19)... Query Key
         keys = torch.randint(0, 10, (self.seq_len // 2,))
         values = keys + 10 
-        
         seq = torch.stack((keys, values), dim=1).flatten()
-        
         query_idx = torch.randint(0, len(keys), (1,))
         query_key = keys[query_idx]
         target_val = values[query_idx]
-        
-        inp = torch.cat((seq, query_key)) # Length is seq_len + 1
-        
-        # Target: We only care about the last prediction
+        inp = torch.cat((seq, query_key))
         tgt = torch.full_like(inp, target_val.item())
-        
         return inp, tgt
 
-# --- RUNNER ---
-def run_task(name, dataset, epochs=1):
+def run_task(name, dataset, epochs=5, num_tokens=256):
     print(f"\n[TEST] Starting Task: {name}")
     
-    # Get actual sequence length from a sample to ensure model matches data
     sample_inp, _ = dataset[0]
     actual_seq_len = sample_inp.shape[0]
     print(f"      Detected Sequence Length: {actual_seq_len}")
@@ -54,11 +45,11 @@ def run_task(name, dataset, epochs=1):
     # 1. Tiny Model Config
     model = TinyRecursiveModel(
         dim = 64,
-        num_tokens = 256,
+        num_tokens = num_tokens, # Configurable vocab size
         network = MLPMixer1D(
             dim = 64, 
             depth = 2, 
-            seq_len = actual_seq_len # <--- FIXED: Dynamic Size
+            seq_len = actual_seq_len 
         ),
         num_refinement_blocks = 2,
         num_latent_refinements = 4 
@@ -84,18 +75,20 @@ def run_task(name, dataset, epochs=1):
     inp = inp.unsqueeze(0).to(trainer.accelerator.device)
     pred, _ = model.predict(inp)
     
-    print(f"      Prediction Sample (Last Token): {pred[0, -1].item()}")
-    print(f"      Target Sample (Last Token):     {tgt[-1].item()}")
+    final_pred = pred[0, -1].item()
+    final_tgt = tgt[-1].item()
     
-    if pred[0, -1].item() == tgt[-1].item():
+    print(f"      Prediction: {final_pred}")
+    print(f"      Target:     {final_tgt}")
+    
+    if final_pred == final_tgt:
         print(f"      >>> SUCCESS: {name} Passed.")
     else:
         print(f"      >>> FAILURE: {name} Failed.")
 
 if __name__ == "__main__":
-    # 1. Logic Test
-    run_task("Parity Check", ParityDataset(samples=1000, seq_len=64), epochs=2)
+    # Task 1: Parity (Easier Config: 16 tokens, 10 epochs)
+    run_task("Parity Check", ParityDataset(samples=2000, seq_len=64), epochs=10, num_tokens=16)
     
-    # 2. Memory Test
-    # Note: Associative Recall has input length 33 (32 pairs + 1 query)
-    run_task("Associative Recall", AssociativeRecallDataset(samples=1000, seq_len=32), epochs=4)
+    # Task 2: Associative Recall
+    run_task("Associative Recall", AssociativeRecallDataset(samples=2000, seq_len=32), epochs=5, num_tokens=256)

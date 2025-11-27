@@ -114,6 +114,8 @@ class Trainer(Module):
                 update_model_with_ema_every = switch_ema_every,
                 forward_method_names = ('predict',)
             )
+            # --- FIX: FORCE EMA MODEL TO GPU ---
+            self.ema_model.to(self.accelerator.device)
 
         # recurrent and act related variables
 
@@ -122,10 +124,6 @@ class Trainer(Module):
 
         # UPGRADE: Torch Compile logic fixed
         if compile_model and not cpu and hasattr(torch, "compile"):
-            # FIX: Switched from "reduce-overhead" to "default".
-            # "reduce-overhead" uses CUDAGraphs which crash on recursive loops 
-            # where outputs are fed back as inputs (memory overwrite).
-            # "default" still provides kernel fusion (Triton) speedups without the crash.
             self.accelerator.print("Compiling model with torch.compile (mode='default')...")
             self.model = torch.compile(self.model, mode="default")
 
@@ -144,8 +142,6 @@ class Trainer(Module):
 
                 outputs, latents = self.model.get_initial()
                 
-                # We need to tell the compiler that a new step is beginning if we were using CUDAGraphs,
-                # but with mode="default", this loop is safe.
                 for recurrent_step in range_from_one(self.max_recurrent_steps):
                     
                     loss, (main_loss, halt_loss), outputs, latents, pred, halt = self.model(

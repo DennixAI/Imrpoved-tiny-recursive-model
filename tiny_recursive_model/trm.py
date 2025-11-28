@@ -31,19 +31,27 @@ class TinyRecursiveModel(Module):
         dim,
         num_tokens,
         network: Module,
-        num_refinement_blocks = 3,   # T in paper
-        num_latent_refinements = 6,  # n in paper
+        num_refinement_blocks = 3,
+        num_latent_refinements = 6,
         halt_loss_weight = 1.,
-        num_register_tokens = 0
+        num_register_tokens = 0,
+        max_seq_len = 1024
     ):
         super().__init__()
         assert num_refinement_blocks > 1
 
         self.input_embed = nn.Embedding(num_tokens, dim)
+        self.pos_embed = nn.Embedding(max_seq_len, dim)
+
         self.output_init_embed = nn.Parameter(torch.randn(dim) * 1e-2)
         self.latent_init_embed = nn.Parameter(torch.randn(dim) * 1e-2)
 
         self.network = network
+
+        # --- THE FIX FOR LOSS 27.0 ---
+        # These Normalization layers keep the values from exploding to infinity
+        self.latent_norm = nn.LayerNorm(dim)
+        self.output_norm = nn.LayerNorm(dim)
 
         self.num_latent_refinements = num_latent_refinements
         self.num_refinement_blocks = num_refinement_blocks
@@ -69,24 +77,27 @@ class TinyRecursiveModel(Module):
         return outputs, latents
 
     def embed_inputs_with_registers(self, seq):
-        batch = seq.shape[0]
+        batch, seq_len = seq.shape
         inputs = self.input_embed(seq)
+        positions = arange(seq_len, device=self.device)
+        inputs = inputs + self.pos_embed(positions)
         registers = repeat(self.register_tokens, 'n d -> b n d', b = batch)
         inputs, packed_shape = pack([registers, inputs], 'b * d')
         return inputs, packed_shape
 
     def refine_latent_then_output_once(self, inputs, outputs, latents):
-        # inputs, outputs, latents are all (b, n, d)
-        
         # Latent loop
         for _ in range(self.num_latent_refinements):
-            # Simple addition fusion
             combined = outputs.add(latents).add(inputs)
-            latents = self.network(combined)
+            
+            # --- THE FIX: ADD + NORMALIZE ---
+            # 1. Add (Residual) -> Fixes vanishing gradient
+            # 2. Norm -> Fixes exploding values (Loss 27.0)
+            latents = self.latent_norm(latents + self.network(combined))
 
         # Output refinement
         combined_out = outputs.add(latents)
-        outputs = self.network(combined_out)
+        outputs = self.output_norm(outputs + self.network(combined_out))
 
         return outputs, latents
 
@@ -122,7 +133,6 @@ class TinyRecursiveModel(Module):
 
             outputs, latents = self.deep_refinement(inputs, outputs, latents)
 
-            # Native mean reduction for speed (b n d -> b d) -> (b 1) -> (b)
             halt_prob = self.to_halt_pred(outputs.mean(dim=1)).squeeze(-1)
 
             should_halt = (halt_prob >= halt_prob_thres) | is_last
@@ -132,7 +142,6 @@ class TinyRecursiveModel(Module):
 
             registers, outputs_for_pred = unpack(outputs, packed_shape, 'b * d')
             
-            # Save predictions
             pred = self.to_pred(outputs_for_pred[should_halt])
             preds.append(pred)
 
@@ -143,7 +152,6 @@ class TinyRecursiveModel(Module):
             if is_last:
                 continue
 
-            # Filter for next round
             not_halt = ~should_halt
             inputs = inputs[not_halt]
             outputs = outputs[not_halt]
@@ -154,12 +162,8 @@ class TinyRecursiveModel(Module):
                 break
 
         preds = cat(preds).argmax(dim = -1)
-        
-        # FIX: Ensure tensor is created on the correct device
         exited_step_indices = tensor(exited_step_indices, device=self.device)
-        
         exited_batch_indices = cat(exited_batch_indices)
-        
         sort_indices = exited_batch_indices.argsort(dim = -1)
 
         return preds[sort_indices], exited_step_indices[sort_indices]
@@ -178,27 +182,24 @@ class TinyRecursiveModel(Module):
         registers, outputs_for_pred = unpack(outputs, packed_shape, 'b * d')
 
         pred = self.to_pred(outputs_for_pred)
-
-        # Optimization: use native mean
         halt_prob = self.to_halt_pred(outputs.mean(dim=1)).squeeze(-1)
 
-        # Detach state to allow truncated BPTT via the Trainer loop
-        outputs, latents = outputs.detach(), latents.detach()
         return_package = (outputs, latents, pred, halt_prob)
 
         if not exists(labels):
             return return_package
 
-        # Calculate losses
-        # Reshape for cross entropy: (b, n, tokens) -> (b, tokens, n)
         loss = F.cross_entropy(pred.transpose(1, 2), labels, reduction = 'none')
-        loss = loss.mean(dim=-1) # Reduce sequence
+        
+        valid_token_count = (labels != -100).sum(dim=-1).float()
+        valid_token_count = valid_token_count.clamp(min=1.0)
+        
+        loss = loss.sum(dim=-1) / valid_token_count
 
         is_all_correct = (pred.argmax(dim = -1) == labels).all(dim = -1)
         halt_loss = F.binary_cross_entropy(halt_prob, is_all_correct.float(), reduction = 'none')
 
         total_loss = (loss + halt_loss * self.halt_loss_weight)
-
         losses = (loss, halt_loss)
 
         return (total_loss.sum(), losses, *return_package)

@@ -88,16 +88,23 @@ class TinyRecursiveModel(Module):
     def refine_latent_then_output_once(self, inputs, outputs, latents):
         # Latent loop
         for _ in range(self.num_latent_refinements):
+            # PRE-NORM FIX:
+            # Old (Post-Norm): x = Norm(x + Net(x))  <-- Gradients get blocked by Norm
+            # New (Pre-Norm):  x = x + Net(Norm(x))  <-- Gradients flow freely through 'x'
+            
+            # 1. Combine (No Norm yet)
             combined = outputs.add(latents).add(inputs)
             
-            # --- THE FIX: ADD + NORMALIZE ---
-            # 1. Add (Residual) -> Fixes vanishing gradient
-            # 2. Norm -> Fixes exploding values (Loss 27.0)
-            latents = self.latent_norm(latents + self.network(combined))
+            # 2. Normalize Inputs to the Network
+            normed_combined = self.latent_norm(combined)
+            
+            # 3. Residual Update
+            latents = latents + self.network(normed_combined)
 
         # Output refinement
         combined_out = outputs.add(latents)
-        outputs = self.output_norm(outputs + self.network(combined_out))
+        normed_combined_out = self.output_norm(combined_out)
+        outputs = outputs + self.network(normed_combined_out)
 
         return outputs, latents
 

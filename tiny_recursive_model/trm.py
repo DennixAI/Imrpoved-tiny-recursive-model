@@ -48,10 +48,13 @@ class TinyRecursiveModel(Module):
 
         self.network = network
 
-        # --- THE FIX FOR LOSS 27.0 ---
-        # These Normalization layers keep the values from exploding to infinity
         self.latent_norm = nn.LayerNorm(dim)
         self.output_norm = nn.LayerNorm(dim)
+
+        # --- FIX: LEARNABLE SCALING (LayerScale) ---
+        # Initialize at 0.1 (Stable), but let the model learn to change it.
+        self.latent_scale = nn.Parameter(torch.ones(dim) * 0.1)
+        self.output_scale = nn.Parameter(torch.ones(dim) * 0.1)
 
         self.num_latent_refinements = num_latent_refinements
         self.num_refinement_blocks = num_refinement_blocks
@@ -91,15 +94,16 @@ class TinyRecursiveModel(Module):
             combined = outputs.add(latents).add(inputs)
             normed_combined = self.latent_norm(combined)
             
-            # --- FIX: NO SCALING (Full Signal) ---
-            latents = latents + self.network(normed_combined)
+            # --- FIX: USE LEARNABLE SCALE ---
+            # latents = latents + (Learnable_Gamma * Network(x))
+            latents = latents + self.latent_scale * self.network(normed_combined)
 
         # Output refinement
         combined_out = outputs.add(latents)
         normed_combined_out = self.output_norm(combined_out)
         
-        # --- FIX: NO SCALING (Full Signal) ---
-        outputs = outputs + self.network(normed_combined_out)
+        # --- FIX: USE LEARNABLE SCALE ---
+        outputs = outputs + self.output_scale * self.network(normed_combined_out)
 
         return outputs, latents
 

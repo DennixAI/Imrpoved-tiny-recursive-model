@@ -86,8 +86,8 @@ def run_task(name, dataset, epochs=10, num_tokens=256, lr=3e-3):
 
 if __name__ == "__main__":
     # Task 1: Parity Check
-    # FIX: LR 2e-4 (Gentle driving without the 0.1 brake)
-    run_task("Parity Check", ParityDataset(samples=3000, seq_len=16), epochs=10, num_tokens=2, lr=2e-4)
+    # LR 1e-3 + Learnable Scale + No Decay
+    run_task("Parity Check", ParityDataset(samples=3000, seq_len=16), epochs=10, num_tokens=2, lr=1e-3)
     
     # Task 2: Associative Recall
-    run_task("Associative Recall", AssociativeRecallDataset(samples=2000, seq_len=32), epochs=10, num_tokens=256, lr=2e-4)
+    run_task("Associative Recall", AssociativeRecallDataset(samples=2000, seq_len=32), epochs=10, num_tokens=256, lr=1e-3)

@@ -7,10 +7,9 @@ from tiny_recursive_model.trainer import Trainer
 print("--- DIAGNOSTIC SUITE: REASONING & MEMORY ---")
 
 class ParityDataset(Dataset):
-    def __init__(self, samples=2000, seq_len=64):
+    def __init__(self, samples=3000, seq_len=16):
         self.seq_len = seq_len
         self.data = torch.randint(0, 2, (samples, seq_len))
-        # Cumulative Parity (Step-by-step learnable)
         self.targets = self.data.cumsum(dim=1) % 2 
 
     def __len__(self): return len(self.data)
@@ -26,20 +25,15 @@ class AssociativeRecallDataset(Dataset):
         keys = torch.randint(0, 10, (self.seq_len // 2,))
         values = keys + 10 
         seq = torch.stack((keys, values), dim=1).flatten()
-        
         query_idx = torch.randint(0, len(keys), (1,))
         query_key = keys[query_idx]
         target_val = values[query_idx]
-        
         inp = torch.cat((seq, query_key))
-        
-        # Mask previous tokens
         tgt = torch.full_like(inp, -100)
         tgt[-1] = target_val.item()
-        
         return inp, tgt
 
-def run_task(name, dataset, epochs=5, num_tokens=256, lr=1e-3):
+def run_task(name, dataset, epochs=10, num_tokens=256, lr=3e-3):
     print(f"\n[TEST] Starting Task: {name}")
     
     sample_inp, _ = dataset[0]
@@ -48,13 +42,13 @@ def run_task(name, dataset, epochs=5, num_tokens=256, lr=1e-3):
     model = TinyRecursiveModel(
         dim = 64,
         num_tokens = num_tokens,
-        max_seq_len = actual_seq_len + 16, # <-- FIX: Support max length
+        max_seq_len = actual_seq_len + 16,
         network = MLPMixer1D(
             dim = 64, 
             depth = 2, 
             seq_len = actual_seq_len 
         ),
-        num_refinement_blocks = 2,
+        num_refinement_blocks = 2, 
         num_latent_refinements = 4 
     )
 
@@ -62,9 +56,12 @@ def run_task(name, dataset, epochs=5, num_tokens=256, lr=1e-3):
         model,
         dataset,
         learning_rate = lr,
+        # --- FIX: KILL WEIGHT DECAY ---
+        weight_decay = 0.0,  # <--- CRITICAL: Allows the model to keep what it learns
         batch_size = 32,
         epochs = epochs,
         max_recurrent_steps = 12,
+        warmup_steps = 10,
         compile_model = True,
         cpu = not torch.cuda.is_available()
     )
@@ -87,12 +84,10 @@ def run_task(name, dataset, epochs=5, num_tokens=256, lr=1e-3):
     else:
         print(f"      >>> FAILURE: {name} Failed.")
 
-
 if __name__ == "__main__":
     # Task 1: Parity Check
-    # FIX: Lower LR from 1e-3 -> 1e-4
-    run_task("Parity Check", ParityDataset(samples=3000, seq_len=16), epochs=10, num_tokens=2, lr=1e-4)
+    # High LR (3e-3) + No Decay + 0.1 Scaling
+    run_task("Parity Check", ParityDataset(samples=3000, seq_len=16), epochs=10, num_tokens=2, lr=3e-3)
     
     # Task 2: Associative Recall
-    # FIX: Lower LR from 1e-3 -> 1e-4
-    run_task("Associative Recall", AssociativeRecallDataset(samples=2000, seq_len=32), epochs=10, num_tokens=256, lr=1e-4)
+    run_task("Associative Recall", AssociativeRecallDataset(samples=2000, seq_len=32), epochs=10, num_tokens=256, lr=3e-3)

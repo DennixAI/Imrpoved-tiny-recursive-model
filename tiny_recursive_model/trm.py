@@ -88,21 +88,17 @@ class TinyRecursiveModel(Module):
     def refine_latent_then_output_once(self, inputs, outputs, latents):
         # Latent loop
         for _ in range(self.num_latent_refinements):
-            # 1. Combine inputs
             combined = outputs.add(latents).add(inputs)
-            
-            # 2. Normalize (Pre-Norm)
             normed_combined = self.latent_norm(combined)
             
-            # 3. FIX: Scale the update by 0.1
-            # This prevents the value from exploding over 96 loops
+            # --- RESTORED 0.1 SCALING (Safety) ---
             latents = latents + 0.1 * self.network(normed_combined)
 
         # Output refinement
         combined_out = outputs.add(latents)
         normed_combined_out = self.output_norm(combined_out)
         
-        # 4. FIX: Scale the update by 0.1
+        # --- RESTORED 0.1 SCALING (Safety) ---
         outputs = outputs + 0.1 * self.network(normed_combined_out)
 
         return outputs, latents

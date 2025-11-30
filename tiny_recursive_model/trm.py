@@ -50,19 +50,15 @@ class TinyRecursiveModel(Module):
         self.latent_norm = nn.LayerNorm(dim)
         self.output_norm = nn.LayerNorm(dim)
 
-        # 3. Gating Mechanism (Crucial for Stability)
         self.latent_gate = nn.Linear(dim, dim)
         self.output_gate = nn.Linear(dim, dim)
 
-        # --- THE FIX: BIAS INITIALIZATION ---
-        # Initialize bias to -2.0.
-        # Sigmoid(-2.0) approx 0.12.
-        # Update Rule: Memory = (1 - 0.12)*Old + 0.12*New
-        # Result: The model keeps ~88% of its memory by default.
-        # This prevents the "Memory Leak" that caused 56% accuracy.
-        nn.init.constant_(self.latent_gate.bias, -2.0)
-        nn.init.constant_(self.output_gate.bias, -2.0)
-        # ------------------------------------
+        # --- FIX: NEUTRAL INITIALIZATION (0.0) ---
+        # Bias 0.0 -> Sigmoid(0) = 0.5.
+        # This makes the gate "Neutral". It allows the model to choose 
+        # freely between "Remembering" (Recall) and "Flipping" (Parity).
+        nn.init.constant_(self.latent_gate.bias, 0.0)
+        nn.init.constant_(self.output_gate.bias, 0.0)
 
         self.num_latent_refinements = num_latent_refinements
         self.num_refinement_blocks = num_refinement_blocks

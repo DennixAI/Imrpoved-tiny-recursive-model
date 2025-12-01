@@ -34,7 +34,7 @@ class TinyRecursiveModel(Module):
         max_seq_len = 1024
     ):
         super().__init__()
-        assert num_refinement_blocks > 1
+        assert num_refinement_blocks >= 1
 
         self.input_embed = nn.Embedding(num_tokens, dim)
         

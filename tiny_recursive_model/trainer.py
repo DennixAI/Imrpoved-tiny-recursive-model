@@ -36,7 +36,7 @@ class Trainer(Module):
         dataset: Dataset,
         optim_klass = AdamW,
         optim: Optimizer | None = None,
-        learning_rate = 1e-3, # UPGRADE: Increased default base LR
+        learning_rate = 1e-4,
         muon_learning_rate = 1e-3,
         weight_decay = 1.,
         batch_size = 16,
@@ -75,8 +75,6 @@ class Trainer(Module):
                     weight_decay = weight_decay
                 )
             else:
-                # FIX: Removed 'max_recurrent_steps' from divisor. 
-                # We already average loss over steps, so gradients are correct scale.
                 optim = optim_klass(
                     model.parameters(),
                     lr = learning_rate / batch_size,
@@ -109,6 +107,7 @@ class Trainer(Module):
         )
 
     def forward(self):
+        loss_history = [] # caching loss
         for epoch in range_from_one(self.epochs):
             for dataset_input, dataset_output in self.dataloader:
                 
@@ -125,15 +124,9 @@ class Trainer(Module):
 
                     total_loss_accumulated += (loss / self.max_recurrent_steps)
 
-                    if recurrent_step % 4 == 0 or recurrent_step == self.max_recurrent_steps:
-                         if recurrent_step == self.max_recurrent_steps and epoch % 1 == 0:
-                            # Print less frequently to keep logs clean
-                            pass
-
+                    # Only accumulate gradients, handling halting logic
                     halt_mask = halt >= self.halt_prob_thres
-
-                    if not halt_mask.any():
-                        continue
+                    if not halt_mask.any(): continue
                     
                     if halt_mask.any():
                         outputs = outputs[~halt_mask]
@@ -141,12 +134,13 @@ class Trainer(Module):
                         dataset_input = dataset_input[~halt_mask]
                         dataset_output = dataset_output[~halt_mask]
 
-                    if is_empty(outputs):
-                        break
+                    if is_empty(outputs): break
                 
-                self.accelerator.print(f'[{epoch}] loss: {main_loss.mean().item():.3f}')
+                # Log the loss for plotting
+                current_loss = main_loss.mean().item()
+                loss_history.append(current_loss)
+                self.accelerator.print(f'[{epoch}] loss: {current_loss:.3f}')
                 self.accelerator.backward(total_loss_accumulated)
-                ## adding clipping
                 self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 
                 self.optim.step()
@@ -159,3 +153,4 @@ class Trainer(Module):
 
         if self.accelerator.is_main_process:
             self.ema_model.copy_params_from_ema_to_model()
+        return loss_history

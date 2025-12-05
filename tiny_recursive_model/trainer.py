@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
 import torch
+from pathlib import Path
 from torch.nn import Module
 from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LambdaLR
@@ -48,7 +51,9 @@ class Trainer(Module):
         switch_ema_every = 10000,
         accelerate_kwargs: dict = dict(),
         cpu = False,
-        compile_model = True 
+        compile_model = True,
+        # --- NEW ARGUMENT: Checkpoint Directory ---
+        checkpoint_folder = './checkpoints' 
     ):
         super().__init__()
 
@@ -56,6 +61,11 @@ class Trainer(Module):
         self.batch_size = batch_size
         self.epochs = epochs
         self.dataset = dataset
+        
+        # Checkpointing setup
+        self.checkpoint_folder = Path(checkpoint_folder)
+        self.checkpoint_folder.mkdir(parents=True, exist_ok=True)
+
         self.dataloader = DataLoader(
             self.dataset,
             batch_size = self.batch_size,
@@ -106,9 +116,41 @@ class Trainer(Module):
             self.model, self.optim, self.dataloader, self.scheduler
         )
 
+    def save_checkpoint(self, epoch):
+        # Saves to ./checkpoints/epoch-N
+        save_path = self.checkpoint_folder / f"epoch-{epoch}"
+        self.accelerator.save_state(save_path)
+        self.accelerator.print(f"Checkpoint saved: {save_path}")
+
+    def load_last_checkpoint(self):
+        # find the highest epoch number in the folder
+        if not self.checkpoint_folder.exists():
+            return 1 # Start at epoch 1
+
+        folders = [f for f in os.listdir(self.checkpoint_folder) if f.startswith("epoch-")]
+        if not folders:
+            return 1
+        
+        # Extract numbers from "epoch-10", "epoch-5"
+        epochs_found = [int(re.findall(r'\d+', f)[0]) for f in folders]
+        last_epoch = max(epochs_found)
+        
+        load_path = self.checkpoint_folder / f"epoch-{last_epoch}"
+        self.accelerator.print(f"Resuming from checkpoint: {load_path}")
+        self.accelerator.load_state(load_path)
+        
+        return last_epoch + 1
+
     def forward(self):
-        loss_history = [] # caching loss
-        for epoch in range_from_one(self.epochs):
+        loss_history = []
+        
+
+        start_epoch = self.load_last_checkpoint()
+        if start_epoch > self.epochs:
+            self.accelerator.print(f"Training already completed ({start_epoch-1}/{self.epochs} epochs).")
+            return loss_history
+
+        for epoch in range(start_epoch, self.epochs + 1):
             for dataset_input, dataset_output in self.dataloader:
                 
                 self.optim.zero_grad()
@@ -124,7 +166,6 @@ class Trainer(Module):
 
                     total_loss_accumulated += (loss / self.max_recurrent_steps)
 
-                    # Only accumulate gradients, handling halting logic
                     halt_mask = halt >= self.halt_prob_thres
                     if not halt_mask.any(): continue
                     
@@ -136,10 +177,10 @@ class Trainer(Module):
 
                     if is_empty(outputs): break
                 
-                # Log the loss for plotting
                 current_loss = main_loss.mean().item()
                 loss_history.append(current_loss)
                 self.accelerator.print(f'[{epoch}] loss: {current_loss:.3f}')
+                
                 self.accelerator.backward(total_loss_accumulated)
                 self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 
@@ -148,9 +189,13 @@ class Trainer(Module):
 
                 if self.accelerator.is_main_process:
                     self.ema_model.update()
+            
+            # save checkpoint
+            self.save_checkpoint(epoch)
 
         self.accelerator.print('complete')
 
         if self.accelerator.is_main_process:
             self.ema_model.copy_params_from_ema_to_model()
+            
         return loss_history
